@@ -1,0 +1,23 @@
+# Copy this file to podman-local.yml and replace every example value.
+# podman-local.yml is gitignored and should remain readable only by you.
+# ADAPT roles: 1 = administrator, 2 = instructor, 3 = student.
+# Developer status is separate from role and is hard-coded by user ID.
+developer:
+  first_name: "Local"
+  last_name: "Developer"
+  email: "developer@localhost.test"
+  password: "replace-with-a-long-developer-password"
+  time_zone: "America/Los_Angeles"
+  # Role 2 provides instructor permissions. On a fresh database this account
+  # is created first as user ID 1, which also gives it developer status.
+  role: 2
+
+instructor:
+  first_name: "Local"
+  last_name: "Instructor"
+  email: "instructor@localhost.test"
+  password: "replace-with-a-long-instructor-password"
+  time_zone: "America/Los_Angeles"
+  # Role 2 provides instructor permissions. This second account normally gets
+  # user ID 2, so it does not receive the hard-coded developer status.
+  role: 2

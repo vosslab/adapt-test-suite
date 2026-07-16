@@ -5,6 +5,7 @@ output*/
 _temp*.?*
 OTHER_REPOS/
 # === LOCAL ===
+/podman-local.yml
 # Template-only ignores.
 # === PYTHON ===
 build/
