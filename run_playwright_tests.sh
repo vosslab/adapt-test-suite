@@ -57,7 +57,14 @@ if [[ ! -f tests/playwright/playwright.config.mjs ]]; then
     exit 1
 fi
 
-"$REPO_ROOT/run_podman-worktree.sh" setup-fixtures
+FIXTURE_OUTPUT="$("$REPO_ROOT/run_podman-worktree.sh" setup-fixtures)"
+printf '%s\n' "$FIXTURE_OUTPUT"
+ADAPT_TEST_COURSE_ID="$(printf '%s\n' "$FIXTURE_OUTPUT" | sed -n 's/^ADAPT_TEST_COURSE_ID=//p' | tail -n 1)"
+if [[ ! "$ADAPT_TEST_COURSE_ID" =~ ^[0-9]+$ ]]; then
+    printf 'error: fixture setup did not return a valid ADAPT_TEST_COURSE_ID\n' >&2
+    exit 1
+fi
+export ADAPT_TEST_COURSE_ID
 
 printf '==> Playwright test'
 if ((${#PLAYWRIGHT_ARGS[@]} > 0)); then

@@ -7,6 +7,7 @@ import { REPO_ROOT } from './repo_root.mjs';
 
 const localConfig = YAML.parse(readFileSync(path.join(REPO_ROOT, 'podman-local.yml'), 'utf8'));
 const screenshotsDir = path.join(REPO_ROOT, 'docs', 'screenshots');
+const testCourseId = process.env.ADAPT_TEST_COURSE_ID;
 
 mkdirSync(screenshotsDir, { recursive: true });
 
@@ -27,7 +28,8 @@ async function waitForRadioTransitions(radioGroup) {
 
 test('captures the assignment mode and algorithmic variation controls', async ({ page }) => {
   await loginAsInstructor(page);
-  await page.goto('/instructors/courses/1/assignments');
+  expect(testCourseId).toMatch(/^\d+$/);
+  await page.goto(`/instructors/courses/${testCourseId}/assignments`);
   await page.getByRole('button', { name: 'New Assignment', exact: true }).click();
 
   const modal = page.locator('#modal-assignment-properties');
@@ -44,7 +46,8 @@ test('captures the assignment mode and algorithmic variation controls', async ({
   const dynamicQuestioningHeader = dynamicQuestioningCard.locator('.card-header');
 
   const attemptStructure = page.locator('#mastery_retake_enabled');
-  const responsesPerQuestion = assignmentModeCard.locator('input[type="text"]').first();
+  const responsesPerQuestion = page.getByLabel('Responses allowed per question');
+  const assignmentAttempts = page.getByLabel('Whole-assignment attempts allowed');
 
   await expect(attemptStructure).toBeVisible();
   await expect(responsesPerQuestion).toBeVisible();
@@ -73,6 +76,7 @@ test('captures the assignment mode and algorithmic variation controls', async ({
   await waitForRadioTransitions(attemptStructure);
   await wholeAssignment.evaluate((element) => element.blur());
   await expect(responsesPerQuestion).toBeHidden();
+  await expect(assignmentAttempts).toBeVisible();
   await assignmentModeCard.screenshot({
     path: path.join(screenshotsDir, 'assignment_mode_mastery.png')
   });

@@ -146,6 +146,7 @@ $result = DB::transaction(function () use ($instructor, $student, $base_url) {
 });
 
 echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+echo "ADAPT_TEST_COURSE_ID={$result['course_id']}" . PHP_EOL;
 
 function upsertNativeQuestion(
     User $instructor,
