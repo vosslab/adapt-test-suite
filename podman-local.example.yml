@@ -21,3 +21,12 @@ instructor:
   # Role 2 provides instructor permissions. This second account normally gets
   # user ID 2, so it does not receive the hard-coded developer status.
   role: 2
+
+student:
+  first_name: "Local"
+  last_name: "Student"
+  email: "student@localhost.test"
+  password: "replace-with-a-long-student-password"
+  time_zone: "America/Los_Angeles"
+  # Role 3 provides the student view used by end-to-end assignment tests.
+  role: 3

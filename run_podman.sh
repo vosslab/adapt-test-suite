@@ -2,9 +2,13 @@
 
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_DIR
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+readonly REPO_ROOT
 
+# Use the repository's documented Python environment before invoking PyYAML.
+source "$REPO_ROOT/source_me.sh"
+
+ADAPT_SOURCE_DIR="${ADAPT_SOURCE_DIR:-$REPO_ROOT/../LibreTexts-ADAPT}"
 ADAPT_REF="${ADAPT_REF:-origin/master}"
 ADAPT_IMAGE="${ADAPT_IMAGE:-localhost/libretexts-adapt:local}"
 ADAPT_PORT="${ADAPT_PORT:-8080}"
@@ -17,7 +21,7 @@ ADAPT_DB_DATABASE="${ADAPT_DB_DATABASE:-adapt}"
 ADAPT_DB_USERNAME="${ADAPT_DB_USERNAME:-adapt}"
 ADAPT_DB_PASSWORD="${ADAPT_DB_PASSWORD:-adapt_local_password}"
 ADAPT_DB_ROOT_PASSWORD="${ADAPT_DB_ROOT_PASSWORD:-adapt_local_root_password}"
-ADAPT_LOCAL_CONFIG="${ADAPT_LOCAL_CONFIG:-$SCRIPT_DIR/podman-local.yml}"
+ADAPT_LOCAL_CONFIG="${ADAPT_LOCAL_CONFIG:-$REPO_ROOT/podman-local.yml}"
 ADAPT_COMMAND_NAME="${ADAPT_COMMAND_NAME:-$0}"
 BUILD_TEMPORARY_DIRECTORY=""
 
@@ -32,19 +36,23 @@ trap cleanup_build_temporary_directory EXIT
 
 usage() {
     cat <<'EOF'
-Usage: ./run_podman.sh [up|build|setup-account|down|clean|logs|status]
+Usage: ./run_podman.sh [up|rebuild|build|setup-account|setup-fixtures|down|clean|logs|status]
 
   up       Build the image, start MySQL and Redis, migrate, and launch ADAPT.
+  rebuild  Rebuild the image, then start MySQL, Redis, and ADAPT.
   build    Build only the application image.
   setup-account
-           Create the local developer and instructor accounts from podman-local.yml.
+           Create the local developer, instructor, and student accounts from podman-local.yml.
+  setup-fixtures
+           Create deterministic courses, questions, assignments, enrollment, and mastery state.
   down     Stop and remove the local containers; preserve the database volume.
   clean    Run down, then remove the image and database volume.
   logs     Follow the application logs.
   status   Show the local containers and application URL.
 
-The default source is origin/master, exported without changing the worktree.
-Set ADAPT_REF=WORKTREE to build the currently checked-out files instead.
+The default source is origin/master from ../LibreTexts-ADAPT. Set
+ADAPT_SOURCE_DIR to use another checkout. Set ADAPT_REF=WORKTREE to build
+the currently checked-out files instead.
 
 For complete PDF-parser support, supply Composer authentication:
 
@@ -55,9 +63,8 @@ Without credentials, the licensed Setasign PDF parser is omitted from the
 temporary build context. The repository itself is never modified.
 
 Useful overrides: ADAPT_PORT, ADAPT_IMAGE, ADAPT_REF, ADAPT_DB_PASSWORD.
-Set ADAPT_REBUILD=1 with `up` to force rebuilding an image that already exists.
 
-For local developer and instructor accounts:
+For local developer, instructor, and student accounts:
 
   cp podman-local.example.yml podman-local.yml
   chmod 600 podman-local.yml
@@ -76,14 +83,18 @@ require_command() {
 
 yaml_value() {
     local key="$1"
-    ruby -ryaml -e '
-      data = YAML.safe_load(File.read(ARGV[0])) || {}
-      value = ARGV[1].split(".").reduce(data) do |current, part|
-        current.is_a?(Hash) ? current[part] : nil
-      end
-      abort("missing YAML value: #{ARGV[1]}") if value.nil?
-      print(value)
-    ' "$ADAPT_LOCAL_CONFIG" "$key"
+    python3 -c '
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as config_file:
+    value = yaml.safe_load(config_file) or {}
+for part in sys.argv[2].split("."):
+    if not isinstance(value, dict) or part not in value:
+        raise SystemExit(f"missing YAML value: {sys.argv[2]}")
+    value = value[part]
+print(value, end="")
+' "$ADAPT_LOCAL_CONFIG" "$key"
 }
 
 ensure_podman() {
@@ -123,8 +134,8 @@ composer_auth_file() {
         cp "$COMPOSER_AUTH_FILE" "$destination"
     elif [[ -n "${COMPOSER_AUTH:-}" ]]; then
         printf '%s' "$COMPOSER_AUTH" >"$destination"
-    elif [[ -r "$SCRIPT_DIR/auth.json" ]]; then
-        cp "$SCRIPT_DIR/auth.json" "$destination"
+    elif [[ -r "$REPO_ROOT/auth.json" ]]; then
+        cp "$REPO_ROOT/auth.json" "$destination"
     else
         printf '{}\n' >"$destination"
         SKIP_LICENSED_PDF_PARSER=1
@@ -160,11 +171,11 @@ stage_source() {
             --exclude='podman-local.yml' \
             --exclude='node_modules' \
             --exclude='vendor' \
-            -C "$SCRIPT_DIR" -cf - . | tar -C "$destination" -xf -
+            -C "$ADAPT_SOURCE_DIR" -cf - . | tar -C "$destination" -xf -
     else
-        git -C "$SCRIPT_DIR" rev-parse --verify "${ADAPT_REF}^{commit}" >/dev/null 2>&1 \
+        git -C "$ADAPT_SOURCE_DIR" rev-parse --verify "${ADAPT_REF}^{commit}" >/dev/null 2>&1 \
             || die "Git ref does not exist locally: $ADAPT_REF"
-        git -C "$SCRIPT_DIR" archive "$ADAPT_REF" | tar -C "$destination" -xf -
+        git -C "$ADAPT_SOURCE_DIR" archive "$ADAPT_REF" | tar -C "$destination" -xf -
     fi
 }
 
@@ -316,6 +327,7 @@ app_environment_args() {
         -e "SESSION_DRIVER=file"
         -e "MAIL_MAILER=log"
         -e "JWT_SECRET=$app_key"
+        -e "WEBWORK_JWT_SECRET=$app_key"
         -e "AWS_DEFAULT_REGION=us-east-1"
         -e "AWS_REGION=us-east-1"
         -e "XRAY_ENABLED="
@@ -394,22 +406,26 @@ setup_local_account() {
 }
 
 setup_local_accounts() {
-    local developer_email instructor_email
+    local developer_email instructor_email student_email
 
     [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
         || die "local account file not found: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
     container_exists "$ADAPT_APP_CONTAINER" \
         || die "application container is not running; run '$ADAPT_COMMAND_NAME up' first"
-    require_command ruby
+    require_command python3
 
     chmod 600 "$ADAPT_LOCAL_CONFIG"
     developer_email="$(yaml_value developer.email)"
     instructor_email="$(yaml_value instructor.email)"
-    [[ "$developer_email" != "$instructor_email" ]] \
-        || die "developer.email and instructor.email must be different"
+    student_email="$(yaml_value student.email)"
+    [[ "$developer_email" != "$instructor_email" \
+        && "$developer_email" != "$student_email" \
+        && "$instructor_email" != "$student_email" ]] \
+        || die "developer, instructor, and student emails must be different"
 
     setup_local_account developer 1
     setup_local_account instructor 0
+    setup_local_account student 0
 }
 
 setup_local_accounts_if_configured() {
@@ -418,6 +434,30 @@ setup_local_accounts_if_configured() {
     else
         printf 'No podman-local.yml found; copy podman-local.example.yml to create local accounts.\n'
     fi
+}
+
+setup_test_fixtures() {
+    local fixture_file instructor_email student_email container_fixture
+
+    [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
+        || die "local account file not found: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
+    container_exists "$ADAPT_APP_CONTAINER" \
+        || die "application container is not running; run '$ADAPT_COMMAND_NAME up' first"
+
+    fixture_file="$REPO_ROOT/tests/e2e/setup_adapt_fixtures.php"
+    container_fixture="/tmp/setup_adapt_fixtures.php"
+    [[ -r "$fixture_file" ]] || die "fixture setup file not found: $fixture_file"
+
+    setup_local_accounts
+    instructor_email="$(yaml_value instructor.email)"
+    student_email="$(yaml_value student.email)"
+
+    printf 'Creating deterministic ADAPT test data...\n'
+    podman cp "$fixture_file" "$ADAPT_APP_CONTAINER:$container_fixture"
+    podman exec "$ADAPT_APP_CONTAINER" php "$container_fixture" \
+        "$instructor_email" \
+        "$student_email" \
+        "http://localhost:$ADAPT_PORT"
 }
 
 start_application() {
@@ -473,7 +513,7 @@ main() {
             usage
             return
             ;;
-        up|build|setup-account|down|clean|logs|status)
+        up|rebuild|build|setup-account|setup-fixtures|down|clean|logs|status)
             ensure_podman
             ;;
         *)
@@ -483,11 +523,11 @@ main() {
     esac
 
     case "$action" in
-        up)
-            if [[ "${ADAPT_REBUILD:-0}" == "1" ]] || ! podman image exists "$ADAPT_IMAGE"; then
+        up|rebuild)
+            if [[ "$action" == "rebuild" ]] || [[ "${ADAPT_REBUILD:-0}" == "1" ]] || ! podman image exists "$ADAPT_IMAGE"; then
                 build_image
             else
-                printf 'Using existing image %s (set ADAPT_REBUILD=1 to rebuild).\n' "$ADAPT_IMAGE"
+                printf 'Using existing image %s (run `%s rebuild` to rebuild).\n' "$ADAPT_IMAGE" "$ADAPT_COMMAND_NAME"
             fi
             ensure_network_and_volume
             start_dependencies
@@ -500,6 +540,9 @@ main() {
             ;;
         setup-account)
             setup_local_accounts
+            ;;
+        setup-fixtures)
+            setup_test_fixtures
             ;;
         down)
             down

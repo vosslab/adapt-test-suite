@@ -1,0 +1,8 @@
+{
+  "name": "adapt-test-suite",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "yaml": "2.8.1"
+  }
+}

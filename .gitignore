@@ -6,6 +6,11 @@ _temp*.?*
 OTHER_REPOS/
 # === LOCAL ===
 /podman-local.yml
+/auth.json
+/node_modules/
+/playwright-report/
+/test-results/
+/package-lock.json
 # Template-only ignores.
 # === PYTHON ===
 build/
@@ -14,4 +19,3 @@ sdist/
 *.egg
 *.egg-info/
 site/
-
