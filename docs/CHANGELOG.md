@@ -1,3 +1,28 @@
+## 2026-07-18
+
+### Additions and New Features
+
+- Added an authoritative implementation outcome to `the_plan.md` while preserving the original
+  proposal as historical context.
+- Added `docs/ADAPT_MAINTAINER_STYLE.md` with concise, evidence-based conventions observed in the
+  upstream Laravel, Vue, migration, and Feature-test code.
+- Added deterministic Native-question assignments for comparing per-question and whole-assignment
+  attempt policies with an enrolled local student.
+- Added Playwright coverage and screenshots for completing, reviewing, and restarting a
+  whole-assignment attempt while preserving the legacy per-question workflow.
+
+### Fixes and Maintenance
+
+- Clarified the Podman command lifecycle: `up` and `rebuild` preserve data, `reset` recreates the
+  database and fixtures, and `clean` removes the complete local environment.
+- Updated browser coverage for the persistent attempt-completion panel and numbered
+  `Start Attempt` action that replaced the second completion popup.
+
+### Developer Tests and Notes
+
+- Verified the worktree production build and all four Playwright tests against the local Podman
+  environment.
+
 ## 2026-07-16
 
 ### Additions and New Features

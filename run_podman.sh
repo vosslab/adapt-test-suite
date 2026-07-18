@@ -8,7 +8,7 @@ readonly REPO_ROOT
 # Use the repository's documented Python environment before invoking PyYAML.
 source "$REPO_ROOT/source_me.sh"
 
-ADAPT_SOURCE_DIR="${ADAPT_SOURCE_DIR:-$REPO_ROOT/../LibreTexts-ADAPT}"
+ADAPT_SOURCE_DIR="${ADAPT_SOURCE_DIR:-$REPO_ROOT/../libretexts-adapt}"
 ADAPT_REF="${ADAPT_REF:-origin/master}"
 ADAPT_IMAGE="${ADAPT_IMAGE:-localhost/libretexts-adapt:local}"
 ADAPT_PORT="${ADAPT_PORT:-8080}"
@@ -35,40 +35,28 @@ cleanup_build_temporary_directory() {
 trap cleanup_build_temporary_directory EXIT
 
 usage() {
-    cat <<'EOF'
-Usage: ./run_podman.sh [up|rebuild|build|setup-account|setup-fixtures|down|clean|logs|status]
+    local command_name
+    command_name="$(basename "$ADAPT_COMMAND_NAME")"
+    cat <<EOF
+Usage: ./$command_name COMMAND
 
-  up       Build the image, start MySQL and Redis, migrate, and launch ADAPT.
-  rebuild  Rebuild the image, then start MySQL, Redis, and ADAPT.
+Commands:
+
+  up       Start ADAPT with the preserved database; build the image if missing.
+           Apply migrations and ensure accounts and fixtures exist.
+  rebuild  Rebuild the image from the current source, preserve the database,
+           and start ADAPT.
+  reset    Replace the database, start ADAPT, and recreate accounts and fixtures.
   build    Build only the application image.
   setup-account
-           Create the local developer, instructor, and student accounts from podman-local.yml.
+           Start ADAPT if needed and update accounts from podman-local.yml.
   setup-fixtures
-           Create deterministic courses, questions, assignments, enrollment, and mastery state.
-  down     Stop and remove the local containers; preserve the database volume.
-  clean    Run down, then remove the image and database volume.
+           Start ADAPT if needed and reset the deterministic test course.
+  down     Remove containers; preserve the image and database.
+  clean    Remove containers, image, database volume, and network.
   logs     Follow the application logs.
-  status   Show the local containers and application URL.
-
-The default source is origin/master from ../LibreTexts-ADAPT. Set
-ADAPT_SOURCE_DIR to use another checkout. Set ADAPT_REF=WORKTREE to build
-the currently checked-out files instead.
-
-For complete PDF-parser support, supply Composer authentication:
-
-  COMPOSER_AUTH_FILE="$HOME/.config/composer/auth.json" ./run_podman.sh up
-  COMPOSER_AUTH='{"http-basic":{"www.setasign.com":{"username":"...","password":"..."}}}' ./run_podman.sh up
-
-Without credentials, the licensed Setasign PDF parser is omitted from the
-temporary build context. The repository itself is never modified.
-
-Useful overrides: ADAPT_PORT, ADAPT_IMAGE, ADAPT_REF, ADAPT_DB_PASSWORD.
-
-For local developer, instructor, and student accounts:
-
-  cp podman-local.example.yml podman-local.yml
-  chmod 600 podman-local.yml
-  # Edit podman-local.yml, then run `up` or `setup-account`.
+  status   Show container status and the application URL.
+  help     Show this command reference.
 EOF
 }
 
@@ -118,6 +106,10 @@ ensure_podman() {
 
 container_exists() {
     podman container exists "$1"
+}
+
+container_running() {
+    [[ "$(podman inspect --format '{{.State.Running}}' "$1" 2>/dev/null || true)" == "true" ]]
 }
 
 remove_container() {
@@ -382,24 +374,23 @@ setup_local_account() {
             $accountType = getenv("LOCAL_ACCOUNT_TYPE");
             $email = getenv("LOCAL_ACCOUNT_EMAIL");
             $user = App\User::where("email", $email)->first();
-            if ($user) {
-                echo "Local {$accountType} account already exists: {$email} (user ID {$user->id})\n";
-            } else {
+            $created = ! $user;
+            if ($created) {
                 $user = new App\User;
-                $user->first_name = getenv("LOCAL_ACCOUNT_FIRST_NAME");
-                $user->last_name = getenv("LOCAL_ACCOUNT_LAST_NAME");
                 $user->email = $email;
+            }
+            $user->first_name = getenv("LOCAL_ACCOUNT_FIRST_NAME");
+            $user->last_name = getenv("LOCAL_ACCOUNT_LAST_NAME");
+            $user->time_zone = getenv("LOCAL_ACCOUNT_TIME_ZONE");
+            $user->role = (int) getenv("LOCAL_ACCOUNT_ROLE");
+            if ($created || ! Illuminate\Support\Facades\Hash::check(getenv("LOCAL_ACCOUNT_PASSWORD"), $user->password)) {
                 $user->password = bcrypt(getenv("LOCAL_ACCOUNT_PASSWORD"));
-                $user->time_zone = getenv("LOCAL_ACCOUNT_TIME_ZONE");
-                $user->role = (int) getenv("LOCAL_ACCOUNT_ROLE");
-                $user->save();
-                echo "Created local {$accountType} account: {$email} (user ID {$user->id})\n";
             }
-            if ((int) $user->role !== (int) getenv("LOCAL_ACCOUNT_ROLE")) {
-                throw new RuntimeException("Existing account role does not match the local YAML configuration.");
-            }
+            $user->save();
+            $verb = $created ? "Created" : "Updated";
+            echo "{$verb} local {$accountType} account: {$email} (user ID {$user->id})\n";
             if (getenv("LOCAL_ACCOUNT_REQUIRE_DEVELOPER") === "1" && ! $user->isDeveloper()) {
-                throw new RuntimeException("User ID {$user->id} is not in the hard-coded ADAPT developer list.");
+                fwrite(STDERR, "warning: user ID {$user->id} is not in the hard-coded ADAPT developer list.\n");
             }
             echo "Local {$accountType} account confirmed.\n";
         '
@@ -410,11 +401,10 @@ setup_local_accounts() {
 
     [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
         || die "local account file not found: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
-    container_exists "$ADAPT_APP_CONTAINER" \
+    container_running "$ADAPT_APP_CONTAINER" \
         || die "application container is not running; run '$ADAPT_COMMAND_NAME up' first"
     require_command python3
 
-    chmod 600 "$ADAPT_LOCAL_CONFIG"
     developer_email="$(yaml_value developer.email)"
     instructor_email="$(yaml_value instructor.email)"
     student_email="$(yaml_value student.email)"
@@ -428,15 +418,8 @@ setup_local_accounts() {
     setup_local_account student 0
 }
 
-setup_local_accounts_if_configured() {
-    if [[ -r "$ADAPT_LOCAL_CONFIG" ]]; then
-        setup_local_accounts
-    else
-        printf 'No podman-local.yml found; copy podman-local.example.yml to create local accounts.\n'
-    fi
-}
-
 setup_test_fixtures() {
+    local fixture_mode="${1:-reset}"
     local fixture_file instructor_email student_email container_fixture
 
     [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
@@ -457,7 +440,8 @@ setup_test_fixtures() {
     podman exec "$ADAPT_APP_CONTAINER" php "$container_fixture" \
         "$instructor_email" \
         "$student_email" \
-        "http://localhost:$ADAPT_PORT"
+        "http://localhost:$ADAPT_PORT" \
+        "$fixture_mode"
 }
 
 start_application() {
@@ -484,6 +468,40 @@ start_application() {
     printf 'Follow startup output with: %s logs\n' "$ADAPT_COMMAND_NAME"
 }
 
+ensure_image() {
+    if ! podman image exists "$ADAPT_IMAGE"; then
+        build_image
+    fi
+}
+
+start_environment() {
+    ensure_network_and_volume
+    start_dependencies
+    wait_for_mysql
+    start_application
+}
+
+ensure_environment_running() {
+    if container_running "$ADAPT_APP_CONTAINER" \
+        && container_running "$ADAPT_DB_CONTAINER" \
+        && container_running "$ADAPT_REDIS_CONTAINER"; then
+        wait_for_application
+        return
+    fi
+
+    ensure_image
+    start_environment
+}
+
+setup_test_environment_if_configured() {
+    local fixture_mode="${1:-ensure}"
+    if [[ -r "$ADAPT_LOCAL_CONFIG" ]]; then
+        setup_test_fixtures "$fixture_mode"
+    else
+        printf 'No podman-local.yml found; local accounts and test fixtures were not created.\n'
+    fi
+}
+
 down() {
     remove_container "$ADAPT_APP_CONTAINER"
     remove_container "$ADAPT_REDIS_CONTAINER"
@@ -492,11 +510,13 @@ down() {
 }
 
 clean() {
-    down
+    remove_container "$ADAPT_APP_CONTAINER"
+    remove_container "$ADAPT_REDIS_CONTAINER"
+    remove_container "$ADAPT_DB_CONTAINER"
     podman image exists "$ADAPT_IMAGE" && podman rmi "$ADAPT_IMAGE" >/dev/null || true
     podman volume exists "$ADAPT_DB_VOLUME" && podman volume rm "$ADAPT_DB_VOLUME" >/dev/null || true
     podman network exists "$ADAPT_NETWORK" && podman network rm "$ADAPT_NETWORK" >/dev/null || true
-    printf 'Image, database volume, and network removed.\n'
+    printf 'Containers, image, database volume, and network removed.\n'
 }
 
 status() {
@@ -513,7 +533,7 @@ main() {
             usage
             return
             ;;
-        up|rebuild|build|setup-account|setup-fixtures|down|clean|logs|status)
+        up|rebuild|reset|build|setup-account|setup-fixtures|down|clean|logs|status)
             ensure_podman
             ;;
         *)
@@ -524,25 +544,33 @@ main() {
 
     case "$action" in
         up|rebuild)
-            if [[ "$action" == "rebuild" ]] || [[ "${ADAPT_REBUILD:-0}" == "1" ]] || ! podman image exists "$ADAPT_IMAGE"; then
+            if [[ "$action" == "rebuild" ]] || ! podman image exists "$ADAPT_IMAGE"; then
                 build_image
             else
                 printf 'Using existing image %s (run `%s rebuild` to rebuild).\n' "$ADAPT_IMAGE" "$ADAPT_COMMAND_NAME"
             fi
-            ensure_network_and_volume
-            start_dependencies
-            wait_for_mysql
-            start_application
-            setup_local_accounts_if_configured
+            start_environment
+            setup_test_environment_if_configured ensure
+            ;;
+        reset)
+            ensure_image
+            remove_container "$ADAPT_APP_CONTAINER"
+            remove_container "$ADAPT_REDIS_CONTAINER"
+            remove_container "$ADAPT_DB_CONTAINER"
+            podman volume exists "$ADAPT_DB_VOLUME" && podman volume rm "$ADAPT_DB_VOLUME" >/dev/null || true
+            start_environment
+            setup_test_environment_if_configured reset
             ;;
         build)
             build_image
             ;;
         setup-account)
+            ensure_environment_running
             setup_local_accounts
             ;;
         setup-fixtures)
-            setup_test_fixtures
+            ensure_environment_running
+            setup_test_fixtures reset
             ;;
         down)
             down

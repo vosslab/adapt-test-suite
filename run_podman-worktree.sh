@@ -5,7 +5,7 @@ set -Eeuo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 readonly REPO_ROOT
 
-ADAPT_REPOSITORY_DIR="${ADAPT_REPOSITORY_DIR:-$REPO_ROOT/../LibreTexts-ADAPT}"
+ADAPT_REPOSITORY_DIR="${ADAPT_REPOSITORY_DIR:-$REPO_ROOT/../libretexts-adapt}"
 WORKTREE_BRANCH="${ADAPT_WORKTREE_BRANCH:-mastery-retakes}"
 WORKTREE_DIR="${ADAPT_WORKTREE_DIR:-}"
 
@@ -40,11 +40,13 @@ export ADAPT_DB_VOLUME="${ADAPT_DB_VOLUME:-adapt-mastery-mysql-data}"
 export ADAPT_LOCAL_CONFIG="${ADAPT_LOCAL_CONFIG:-$REPO_ROOT/podman-local.yml}"
 export ADAPT_COMMAND_NAME="$REPO_ROOT/run_podman-worktree.sh"
 
-printf 'Using worktree: %s (%s)\n' "$WORKTREE_DIR" "$WORKTREE_BRANCH"
-printf 'Using URL: http://localhost:%s\n' "$ADAPT_PORT"
-
 if (($# == 0)); then
     set -- up
+fi
+
+if [[ "$1" != "help" && "$1" != "-h" && "$1" != "--help" ]]; then
+    printf 'Using worktree: %s (%s)\n' "$WORKTREE_DIR" "$WORKTREE_BRANCH"
+    printf 'Using URL: http://localhost:%s\n' "$ADAPT_PORT"
 fi
 
 "$REPO_ROOT/run_podman.sh" "$@"

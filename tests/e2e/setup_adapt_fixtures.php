@@ -8,28 +8,35 @@ use App\Section;
 use App\User;
 use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 require '/var/www/html/vendor/autoload.php';
 
 $app = require '/var/www/html/bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
 
-if ($argc !== 4) {
+if ($argc < 4 || $argc > 5) {
     throw new RuntimeException(
-        'Usage: php setup_adapt_fixtures.php <instructor-email> <student-email> <base-url>'
+        'Usage: php setup_adapt_fixtures.php <instructor-email> <student-email> <base-url> [ensure|reset]'
     );
 }
 
 $instructor = User::where('email', $argv[1])->firstOrFail();
 $student = User::where('email', $argv[2])->firstOrFail();
 $base_url = rtrim($argv[3], '/');
+$fixture_mode = $argv[4] ?? 'reset';
+if (!in_array($fixture_mode, ['ensure', 'reset'], true)) {
+    throw new RuntimeException('Fixture mode must be ensure or reset.');
+}
 
 if ((int)$instructor->role !== 2 || (int)$student->role !== 3) {
     throw new RuntimeException('Fixture accounts must be an instructor (role 2) and student (role 3).');
 }
 
-$result = DB::transaction(function () use ($instructor, $student, $base_url) {
+$result = DB::transaction(function () use ($instructor, $student, $base_url, $fixture_mode) {
     $now = now();
+    $supports_assignment_attempt_policy = Schema::hasColumn('assignments', 'mastery_retake_enabled')
+        && Schema::hasTable('mastery_assignment_attempts');
     if (!$student->central_identity_id) {
         $student->central_identity_id = sprintf('00000000-0000-4000-8000-%012d', $student->id);
         $student->save();
@@ -52,6 +59,10 @@ $result = DB::transaction(function () use ($instructor, $student, $base_url) {
             'school_id' => DB::table('schools')->min('id'),
             'shown' => 1
         ]
+    );
+    DB::table('course_orders')->updateOrInsert(
+        ['course_id' => $course->id, 'user_id' => $instructor->id],
+        ['order' => 900, 'created_at' => $now, 'updated_at' => $now]
     );
     DB::table('final_grades')->updateOrInsert(
         ['course_id' => $course->id],
@@ -115,33 +126,63 @@ $result = DB::transaction(function () use ($instructor, $student, $base_url) {
         )
     ];
 
-    $native_assignment = upsertAssignment(
+    $native_per_question_assignment = upsertAssignment(
         $course,
-        'Native Question Baseline',
+        'Native Questions: Per-Question Attempts',
         901,
         false,
-        false
+        false,
+        $supports_assignment_attempt_policy
     );
-    attachQuestions($native_assignment, $native_questions);
-    assignToCourse($native_assignment, $course, $now);
+    attachQuestions($native_per_question_assignment, $native_questions);
+    assignToCourse($native_per_question_assignment, $course, $now);
 
-    $mastery_assignment = upsertAssignment(
-        $course,
-        'Whole-Assignment Mastery Retake',
-        902,
-        true,
-        true
-    );
-    attachQuestions($mastery_assignment, $webwork_questions);
-    assignToCourse($mastery_assignment, $course, $now);
-    resetCompletedMasteryAttempt($mastery_assignment, $student, $webwork_questions, $now);
+    $native_whole_assignment = null;
+    $webwork_assignment = null;
+    if ($supports_assignment_attempt_policy) {
+        $webwork_assignment = upsertAssignment(
+            $course,
+            'WeBWorK Test: Whole-Assignment Attempts',
+            902,
+            true,
+            true,
+            true
+        );
+        attachQuestions($webwork_assignment, $webwork_questions);
+        assignToCourse($webwork_assignment, $course, $now);
+
+        $native_whole_assignment = upsertAssignment(
+            $course,
+            'Native Questions: Whole-Assignment Attempts',
+            903,
+            false,
+            true,
+            true
+        );
+        attachQuestions($native_whole_assignment, $native_questions);
+        assignToCourse($native_whole_assignment, $course, $now);
+
+        if ($fixture_mode === 'reset') {
+            clearStudentAssignmentState($native_whole_assignment, $student);
+            resetCompletedMasteryAttempt($webwork_assignment, $student, $webwork_questions, $now);
+        } elseif (!MasteryAssignmentAttempt::where('assignment_id', $webwork_assignment->id)
+            ->where('user_id', $student->id)
+            ->exists()) {
+            resetCompletedMasteryAttempt($webwork_assignment, $student, $webwork_questions, $now);
+        }
+    }
+    if ($fixture_mode === 'reset') {
+        clearStudentAssignmentState($native_per_question_assignment, $student);
+    }
 
     return [
         'course_id' => $course->id,
         'section_id' => $section->id,
         'student_id' => $student->id,
-        'native_assignment_id' => $native_assignment->id,
-        'mastery_assignment_id' => $mastery_assignment->id
+        'native_per_question_assignment_id' => $native_per_question_assignment->id,
+        'native_whole_assignment_id' => $native_whole_assignment ? $native_whole_assignment->id : null,
+        'webwork_assignment_id' => $webwork_assignment ? $webwork_assignment->id : null,
+        'supports_assignment_attempt_policy' => $supports_assignment_attempt_policy
     ];
 });
 
@@ -229,43 +270,58 @@ function upsertAssignment(
     string $name,
     int $order,
     bool $algorithmic,
-    bool $mastery_retake_enabled
+    bool $mastery_retake_enabled,
+    bool $supports_assignment_attempt_policy
 ): Assignment {
+    $values = [
+        'name' => $name,
+        'formative' => 0,
+        'assessment_type' => 'real time',
+        'can_submit_work' => 0,
+        'number_of_allowed_attempts' => $mastery_retake_enabled ? '1' : '2',
+        'number_of_allowed_attempts_penalty' => 0,
+        'can_view_hint' => 0,
+        'hint_penalty' => 0,
+        'algorithmic' => $algorithmic ? 1 : 0,
+        'assignment_group_id' => DB::table('assignment_groups')->where('assignment_group', 'Homework')->value('id'),
+        'source' => 'a',
+        'number_of_randomized_assessments' => null,
+        'scoring_type' => 'p',
+        'points_per_question' => 'number of points',
+        'default_points_per_question' => 5,
+        'total_points' => 10,
+        'show_points_per_question' => 1,
+        'default_open_ended_submission_type' => '0',
+        'late_policy' => 'not accepted',
+        'shown' => 1,
+        'show_scores' => 1,
+        'solutions_released' => 0,
+        'solutions_availability' => 'automatic',
+        'include_in_weighted_average' => 1,
+        'notifications' => 0,
+        'order' => $order
+    ];
+    if ($supports_assignment_attempt_policy) {
+        $values['mastery_retake_enabled'] = $mastery_retake_enabled ? 1 : 0;
+        $values['mastery_number_of_allowed_attempts'] = 'unlimited';
+    }
+
     return Assignment::updateOrCreate(
-        ['course_id' => $course->id, 'name' => $name],
-        [
-            'formative' => 0,
-            'assessment_type' => 'real time',
-            'can_submit_work' => 0,
-            'number_of_allowed_attempts' => $mastery_retake_enabled ? '1' : '2',
-            'number_of_allowed_attempts_penalty' => 0,
-            'can_view_hint' => 0,
-            'hint_penalty' => 0,
-            'algorithmic' => $algorithmic ? 1 : 0,
-            'mastery_retake_enabled' => $mastery_retake_enabled ? 1 : 0,
-            'assignment_group_id' => DB::table('assignment_groups')->where('assignment_group', 'Homework')->value('id'),
-            'source' => 'a',
-            'number_of_randomized_assessments' => null,
-            'scoring_type' => 'p',
-            'points_per_question' => 'number of points',
-            'default_points_per_question' => 5,
-            'total_points' => 10,
-            'show_points_per_question' => 1,
-            'default_open_ended_submission_type' => '0',
-            'late_policy' => 'not accepted',
-            'shown' => 1,
-            'show_scores' => 1,
-            'solutions_released' => 0,
-            'solutions_availability' => 'automatic',
-            'include_in_weighted_average' => 1,
-            'notifications' => 0,
-            'order' => $order
-        ]
+        ['course_id' => $course->id, 'order' => $order],
+        $values
     );
 }
 
 function attachQuestions(Assignment $assignment, array $questions): void
 {
+    $question_ids = array_map(function (Question $question) {
+        return $question->id;
+    }, $questions);
+    DB::table('assignment_question')
+        ->where('assignment_id', $assignment->id)
+        ->whereNotIn('question_id', $question_ids)
+        ->delete();
+
     foreach ($questions as $index => $question) {
         DB::table('assignment_question')->updateOrInsert(
             ['assignment_id' => $assignment->id, 'question_id' => $question->id],
@@ -322,23 +378,7 @@ function resetCompletedMasteryAttempt(
     array $questions,
     $now
 ): void {
-    $state_tables = [
-        'submission_confirmations',
-        'unconfirmed_submissions',
-        'submission_histories',
-        'shown_hints',
-        'can_give_ups',
-        'submissions',
-        'seeds',
-        'scores',
-        'mastery_assignment_attempts'
-    ];
-    foreach ($state_tables as $table) {
-        DB::table($table)
-            ->where('assignment_id', $assignment->id)
-            ->where('user_id', $student->id)
-            ->delete();
-    }
+    clearStudentAssignmentState($assignment, $student);
 
     $question_ids = array_map(function (Question $question) {
         return $question->id;
@@ -368,4 +408,27 @@ function resetCompletedMasteryAttempt(
         'created_at' => $now,
         'updated_at' => $now
     ]);
+}
+
+function clearStudentAssignmentState(Assignment $assignment, User $student): void
+{
+    $state_tables = [
+        'submission_confirmations',
+        'unconfirmed_submissions',
+        'submission_histories',
+        'shown_hints',
+        'can_give_ups',
+        'submissions',
+        'seeds',
+        'scores'
+    ];
+    if (Schema::hasTable('mastery_assignment_attempts')) {
+        $state_tables[] = 'mastery_assignment_attempts';
+    }
+    foreach ($state_tables as $table) {
+        DB::table($table)
+            ->where('assignment_id', $assignment->id)
+            ->where('user_id', $student->id)
+            ->delete();
+    }
 }

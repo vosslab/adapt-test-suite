@@ -29,7 +29,9 @@ async function waitForRadioTransitions(radioGroup) {
 test('captures the assignment mode and algorithmic variation controls', async ({ page }) => {
   await loginAsInstructor(page);
   expect(testCourseId).toMatch(/^\d+$/);
-  await page.goto(`/instructors/courses/${testCourseId}/assignments`);
+  await page.goto('/instructors/courses');
+  await page.getByRole('link', { name: 'ADAPT Mastery Browser Tests', exact: true }).click();
+  await expect(page).toHaveURL(`/instructors/courses/${testCourseId}/assignments`);
   await page.getByRole('button', { name: 'New Assignment', exact: true }).click();
 
   const modal = page.locator('#modal-assignment-properties');
@@ -98,4 +100,31 @@ test('captures the assignment mode and algorithmic variation controls', async ({
   await expect(page.locator('.tooltip.show')).toBeVisible();
   await dynamicQuestioningHeader.hover();
   await expect(page.locator('.tooltip.show')).toBeHidden();
+});
+
+test('configures a random subset for an existing two-question assignment', async ({ page }) => {
+  await loginAsInstructor(page);
+  expect(testCourseId).toMatch(/^\d+$/);
+  await page.goto('/instructors/courses');
+  await page.getByRole('link', { name: 'ADAPT Mastery Browser Tests', exact: true }).click();
+  await expect(page).toHaveURL(`/instructors/courses/${testCourseId}/assignments`);
+  await page.getByRole('link', {
+    name: 'Assignment properties for Native Questions: Per-Question Attempts',
+    exact: true
+  }).click();
+
+  const modal = page.locator('#modal-assignment-properties');
+  await expect(modal).toBeVisible();
+
+  const randomSubset = modal.locator('#randomizations input[value="1"]');
+  const questionsPerStudent = modal.locator('#number_of_randomized_assessments');
+  await expect(randomSubset).toBeEnabled();
+  await expect(questionsPerStudent).toBeHidden();
+
+  await randomSubset.locator('xpath=following-sibling::label').click();
+
+  await expect(randomSubset).toBeChecked();
+  await expect(questionsPerStudent).toBeVisible();
+  await expect(questionsPerStudent).toHaveValue('1');
+  await expect(modal.getByText('of 2 assignment questions.', { exact: true })).toBeVisible();
 });

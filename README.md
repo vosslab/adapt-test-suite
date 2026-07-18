@@ -14,8 +14,8 @@ container state, Playwright artifacts, and screenshots remain here.
 ![New-assignment state requiring questions before random selection](docs/screenshots/dynamic_questioning_new_assignment.png)
 ![Dynamic questioning controls showing fixed-seed and random-seed variation](docs/screenshots/dynamic_questioning_mastery.png)
 ![Completed mastery attempt in the student assignment view](docs/screenshots/student_mastery_completed_attempt_context.png)
-![Completion modal displayed over the student assignment view](docs/screenshots/student_mastery_completion_modal_context.png)
-![Completion modal explaining when mastery feedback is replaced](docs/screenshots/student_mastery_completion_modal.png)
+![Native questions using the per-question attempt policy](docs/screenshots/student_native_per_question_policy.png)
+![Native whole-assignment attempt with the persistent completion panel](docs/screenshots/student_native_whole_assignment_completed.png)
 ![Fresh whole-assignment attempt in the student assignment view](docs/screenshots/student_mastery_new_attempt_context.png)
 <!-- screenshots:end -->
 
