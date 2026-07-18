@@ -13,6 +13,12 @@
 
 ### Fixes and Maintenance
 
+- Made the mastery Podman launcher automatically fall back to the requested branch in the regular
+  ADAPT checkout when no separate worktree is registered.
+- Derived all worktree-specific Podman resource names from `ADAPT_WORKTREE_BRANCH` so one variable
+  selects future branches and worktrees.
+- Made both Podman entry points fail before container work when account-dependent commands cannot
+  read `podman-local.yml`, while preserving configuration-free help, build, inspection, and cleanup.
 - Clarified the Podman command lifecycle: `up` and `rebuild` preserve data, `reset` recreates the
   database and fixtures, and `clean` removes the complete local environment.
 - Updated browser coverage for the persistent attempt-completion panel and numbered

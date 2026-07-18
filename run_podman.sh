@@ -69,6 +69,11 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+require_local_config() {
+    [[ -r "$ADAPT_LOCAL_CONFIG" ]] || die \
+        "local account file not found or unreadable: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
+}
+
 yaml_value() {
     local key="$1"
     python3 -c '
@@ -399,8 +404,6 @@ setup_local_account() {
 setup_local_accounts() {
     local developer_email instructor_email student_email
 
-    [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
-        || die "local account file not found: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
     container_running "$ADAPT_APP_CONTAINER" \
         || die "application container is not running; run '$ADAPT_COMMAND_NAME up' first"
     require_command python3
@@ -422,8 +425,6 @@ setup_test_fixtures() {
     local fixture_mode="${1:-reset}"
     local fixture_file instructor_email student_email container_fixture
 
-    [[ -r "$ADAPT_LOCAL_CONFIG" ]] \
-        || die "local account file not found: $ADAPT_LOCAL_CONFIG (copy podman-local.example.yml first)"
     container_exists "$ADAPT_APP_CONTAINER" \
         || die "application container is not running; run '$ADAPT_COMMAND_NAME up' first"
 
@@ -493,13 +494,9 @@ ensure_environment_running() {
     start_environment
 }
 
-setup_test_environment_if_configured() {
+setup_test_environment() {
     local fixture_mode="${1:-ensure}"
-    if [[ -r "$ADAPT_LOCAL_CONFIG" ]]; then
-        setup_test_fixtures "$fixture_mode"
-    else
-        printf 'No podman-local.yml found; local accounts and test fixtures were not created.\n'
-    fi
+    setup_test_fixtures "$fixture_mode"
 }
 
 down() {
@@ -543,6 +540,12 @@ main() {
     esac
 
     case "$action" in
+        up|rebuild|reset|setup-account|setup-fixtures)
+            require_local_config
+            ;;
+    esac
+
+    case "$action" in
         up|rebuild)
             if [[ "$action" == "rebuild" ]] || ! podman image exists "$ADAPT_IMAGE"; then
                 build_image
@@ -550,7 +553,7 @@ main() {
                 printf 'Using existing image %s (run `%s rebuild` to rebuild).\n' "$ADAPT_IMAGE" "$ADAPT_COMMAND_NAME"
             fi
             start_environment
-            setup_test_environment_if_configured ensure
+            setup_test_environment ensure
             ;;
         reset)
             ensure_image
@@ -559,7 +562,7 @@ main() {
             remove_container "$ADAPT_DB_CONTAINER"
             podman volume exists "$ADAPT_DB_VOLUME" && podman volume rm "$ADAPT_DB_VOLUME" >/dev/null || true
             start_environment
-            setup_test_environment_if_configured reset
+            setup_test_environment reset
             ;;
         build)
             build_image

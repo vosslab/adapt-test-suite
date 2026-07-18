@@ -28,8 +28,11 @@ cp podman-local.example.yml podman-local.yml
 chmod 600 podman-local.yml
 ```
 
+Startup, reset, account, and fixture commands fail before invoking Podman when this file is missing
+or unreadable. Read-only and cleanup commands remain available without it.
+
 Start the Podman environment from the sibling `LibreTexts-ADAPT` repository's
-`mastery-retakes` worktree:
+`mastery-retakes` branch:
 
 ```bash
 ./run_podman-worktree.sh
@@ -41,8 +44,17 @@ Rebuild the worktree image and relaunch the environment after source changes:
 ./run_podman-worktree.sh rebuild
 ```
 
-Set `ADAPT_REPOSITORY_DIR` or `ADAPT_WORKTREE_DIR` when the ADAPT checkout is not in the
-default sibling location.
+The launcher automatically uses the branch's registered worktree when one exists, preserving
+uncommitted changes. Otherwise, it builds the local or `origin/mastery-retakes` ref from the
+regular ADAPT checkout. Set `ADAPT_REPOSITORY_DIR` only when that checkout is not in the default
+sibling location, or set `ADAPT_WORKTREE_DIR` to override worktree discovery.
+
+For future work, set one variable to select another branch and its worktree. The launcher derives
+its image, container, network, and volume names from the same value:
+
+```bash
+ADAPT_WORKTREE_BRANCH=feature/example ./run_podman-worktree.sh
+```
 
 ## Run the visual smoke test
 
